@@ -1,0 +1,35 @@
+# Replace the bucket and role ARN from Terraform outputs before installing.
+initContainers:
+  - name: velero-plugin-for-aws
+    image: velero/velero-plugin-for-aws:v1.10.0
+    imagePullPolicy: IfNotPresent
+    volumeMounts:
+      - mountPath: /target
+        name: plugins
+
+configuration:
+  backupStorageLocation:
+    - name: default
+      provider: aws
+      bucket: REPLACE_WITH_velero_backup_bucket_name_OUTPUT
+      default: true
+      config:
+        region: ap-south-2
+  volumeSnapshotLocation:
+    - name: default
+      provider: aws
+      config:
+        region: ap-south-2
+
+credentials:
+  useSecret: false
+
+serviceAccount:
+  server:
+    create: true
+    name: velero-server
+    annotations:
+      eks.amazonaws.com/role-arn: REPLACE_WITH_velero_iam_role_arn_OUTPUT
+
+deployNodeAgent: false
+snapshotsEnabled: true

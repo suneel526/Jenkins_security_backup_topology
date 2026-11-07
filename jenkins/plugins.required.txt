@@ -1,0 +1,10 @@
+# Candidate plugins for the new workflow; this is NOT a version lock.
+# First export the actual installed plugin IDs and versions from the live controller.
+# Pin tested versions in a separate plugin lock file before any production upgrade.
+configuration-as-code
+git
+workflow-aggregator
+pipeline-stage-view
+credentials-binding
+job-dsl
+ws-cleanup

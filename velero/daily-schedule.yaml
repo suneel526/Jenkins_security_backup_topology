@@ -1,0 +1,15 @@
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: payment-service-daily
+  namespace: velero
+spec:
+  # 18:30 UTC = 00:00 IST the following day.
+  schedule: "30 18 * * *"
+  template:
+    includedNamespaces:
+      - payment-service-dev
+      - payment-service-qa
+      - payment-service-prod
+    snapshotVolumes: true
+    ttl: 720h0m0s

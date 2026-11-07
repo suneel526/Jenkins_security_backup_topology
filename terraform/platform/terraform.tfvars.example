@@ -1,0 +1,46 @@
+aws_region       = "ap-south-2"
+project_name     = "payment-service"
+eks_cluster_name = "payment-service-eks"
+
+# REQUIRED: obtain these from your existing Jenkins EC2/VPC and VPC console.
+vpc_id                    = "vpc-REPLACE_ME"
+jenkins_security_group_id = "sg-REPLACE_ME"
+private_subnet_ids = [
+  "subnet-REPLACE_PRIVATE_SUBNET_A",
+  "subnet-REPLACE_PRIVATE_SUBNET_B",
+  "subnet-REPLACE_PRIVATE_SUBNET_C"
+]
+
+# REQUIRED: select a currently supported EKS version available in ap-south-2.
+eks_kubernetes_version = "REPLACE_WITH_SUPPORTED_VERSION"
+
+# Verify regional instance type availability, quota and workload sizing.
+eks_node_instance_types = ["t3.large"]
+node_min_size            = 3
+node_desired_size        = 3
+node_max_size            = 9
+node_disk_size           = 50
+
+# Keep the EKS endpoint private. If Jenkins is not in this VPC, solve routing first.
+cluster_endpoint_public_access = false
+cluster_endpoint_public_access_cidrs = []
+
+# Optional: another IAM role to register as an EKS access entry for administration.
+cluster_admin_role_arn = ""
+
+ecr_repository_name = "payment-service"
+
+# Optional: enable only after validating AWS Backup permissions, cost and retention.
+enable_jenkins_backup        = false
+jenkins_instance_id          = ""
+backup_daily_retention_days  = 35
+backup_weekly_retention_days = 365
+
+# Optional private S3 bucket for JENKINS_HOME archive uploads; globally unique name or empty to skip.
+jenkins_home_backup_bucket_name = ""
+
+# Optional EKS namespace and EBS snapshot backup with Velero.
+enable_velero_backup       = false
+velero_backup_bucket_name  = ""
+
+jenkins_home_backup_retention_days = 90

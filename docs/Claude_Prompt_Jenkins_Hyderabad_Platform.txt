@@ -1,0 +1,103 @@
+CLAUDE PROMPT - BUILD A SINGLE-ACCOUNT JENKINS / AWS HYDERABAD PLATFORM
+
+Act as a senior AWS platform architect, DevOps/SRE lead, Jenkins administrator and Kubernetes/EKS specialist. Design and generate a complete, secure, maintainable implementation repository and a step-by-step operator runbook for the requirement below. Do not jump straight to code. First state assumptions, identify unknowns, explain design decisions, and then generate the complete deliverables in a dependency-aware order.
+
+BUSINESS / ENVIRONMENT CONTEXT
+- There is exactly ONE AWS account for this implementation. Do not design cross-account deployment. Use data.aws_caller_identity.current.account_id for account IDs; never hardcode made-up account numbers.
+- The target AWS region is Asia Pacific (Hyderabad), ap-south-2.
+- A Jenkins installation is ALREADY running on an EC2 instance in ap-south-2.
+- The existing Jenkins CI pipeline is working correctly and MUST NOT be broken, overwritten or casually reconfigured. Preserve it. The goal is to reuse/clone its configuration safely and create a separate CD pipeline/job.
+- Jenkins runs on EC2, so use EC2 instance-profile credentials as the default AWS identity. Do NOT create an EKS OIDC/IRSA configuration for this Jenkins instance unless I later say Jenkins itself runs in EKS.
+- The target application is called payment-service. Environments are dev, qa and prod, all in the same AWS account and region. Keep separate IAM deployment roles and isolate environment resources/permissions.
+- The application is expected to use Kubernetes/EKS for runtime deployment so include EKS high availability and topology spread constraints. If no EKS cluster exists, clearly identify EKS provisioning as a separate Terraform component and do not assume cluster/VPC/subnets already exist.
+- Existing AWS IDs, VPCs, subnet IDs, AZ names, cluster names, bucket names, ECR repository names, app health endpoints, database type, Jenkins version, plugin versions and job type are UNKNOWN. Use variables/placeholders and discovery commands; do not invent values.
+
+IMPORTANT FIRST SAFETY TASK: DISCOVER AND PRESERVE THE CURRENT JENKINS SETUP
+1. Provide read-only commands to discover EC2 instance ID, region, current attached IAM instance profile and role, Jenkins version, Java version, JENKINS_HOME, plugin IDs/versions, job types, shared libraries and current CI job settings.
+2. A running EC2 instance can have only one instance profile/IAM role attached at a time. Do not blindly replace an existing role. If a role is already attached, recommend either adding a narrowly scoped sts:AssumeRole permission to that existing role and trusting that existing role from the target roles, or performing a controlled migration after merging all required permissions. Explain how to import an existing role into Terraform state if Terraform will manage it.
+3. Back up Jenkins before changing plugins, configuration, IAM roles or jobs. Include an application-consistent JENKINS_HOME backup/EBS snapshot plan. Protect Jenkins secrets/master-key material separately and never put plaintext secrets in source control or this response.
+4. Leave the existing CI job unchanged. Explain how to export its job metadata/config.xml, shared library settings, SCM/branch/credential IDs and build triggers without exporting secret values.
+
+ARCHITECTURE REQUIREMENTS
+- One AWS account, one primary runtime region ap-south-2.
+- Existing EC2 Jenkins controller retained.
+- Jenkins base role (name `Jenkins-Base-Role` if it does not conflict with an existing role) receives only `sts:AssumeRole` permissions to three specific target roles:
+  - `payment-service-dev-deployer`
+  - `payment-service-qa-deployer`
+  - `payment-service-prod-deployer`
+- Each target role trust policy trusts the actual Jenkins EC2 base role ARN. Use short-lived STS credentials. ExternalId is not required for the direct same-account role trust unless you explain a valid third-party/confused-deputy use case.
+- Use separate environment-specific policies and, preferably, separate environment-specific permissions boundaries with resource scoping. A permissions boundary is a ceiling, not a grant; attach it with the `permissions_boundary` field on the IAM role. Do not attach it as an ordinary policy and do not create empty duplicate roles.
+- Scope S3 artifact prefixes/buckets, ECR repositories, CloudFormation stacks if used, EKS clusters and Kubernetes namespace permissions per environment. Add `iam:PassRole` only if required, and scope it to the exact service role and service condition.
+- Provide a guardrail to deny IAM user/access-key creation for deployment roles if appropriate, and explain its limitations and blast radius.
+- No long-lived AWS access keys in Jenkins credentials. Prefer EC2 instance profile credentials and STS AssumeRole. Secrets belong in Secrets Manager or Parameter Store with KMS encryption.
+- The EKS deployment role must have both AWS IAM permission to call required EKS APIs and Kubernetes authorization via EKS access entries (or a documented existing supported auth mode) plus Kubernetes RBAC. STS AssumeRole alone is not enough for kubectl.
+
+JENKINS CONFIGURATION AS CODE AND SAFE CLONING
+- Include a `jenkins/casc/jenkins.yaml` JCasC example and explain how to export the current controller configuration through Manage Jenkins -> Configuration as Code -> View Configuration, sanitize it, version it in a private repository and test it on a non-production controller first.
+- Clearly distinguish JCasC controller/plugin settings from job definitions and from the complete JENKINS_HOME backup. JCasC alone does not necessarily clone job definitions, plugins, build history, workspaces, external secrets or artifacts.
+- Include a pinned plugin inventory strategy (plugin IDs and versions). Do not assume JCasC installs plugins; explain how plugins are installed/pinned separately and tested for compatibility with the installed Jenkins core.
+- Show a safe clone path for the existing CI job based on its actual job type: Pipeline from SCM, inline Pipeline, Multibranch Pipeline, Freestyle, Folder or Job DSL. Prefer creating a separate `payment-service-cd` job and leave `payment-service-ci` untouched.
+- If the existing job is Pipeline from SCM, clone the job configuration and point the clone to a separate CD Jenkinsfile path/repository. If it is Multibranch, create a separate Multibranch item with an appropriate CD script path. Explain how credentials IDs can be reused only when their purpose/permissions are appropriate; never copy secret values.
+- Explain how to validate the old CI job before and after the change. Include a rollback procedure.
+- Be careful with `numExecutors: 0`: only set it after dedicated build agents exist and the current CI workload has been migrated/tested; otherwise retain current settings initially.
+
+CI/CD REQUIREMENTS
+- Preserve the existing CI pipeline. The existing CI should build, test, run quality/security scans, package the application and publish an immutable image/artifact (ECR image digest or immutable tag).
+- Create a separate CD pipeline with parameterized `dev`, `qa`, `prod`, but never let users type arbitrary role ARNs, namespace names or cluster names. Use a fixed safe mapping in the Jenkinsfile.
+- Pipeline stages must include: pre-flight validation, artifact digest verification, environment selection, production approval, STS AssumeRole, EKS authentication, least-privilege authorization check (`kubectl auth can-i`), Helm/kubectl deploy, rollout/readiness checks, smoke test, release metadata/audit and rollback strategy.
+- Use the same immutable artifact digest for promotion from Dev to QA to Prod; do not rebuild a different artifact per environment.
+- For production, require manual approval by an authorized group and record approver, build number, commit, artifact digest, target namespace and release revision.
+- Use Bash strict mode (`set -euo pipefail`) and disable shell tracing around temporary credentials. Keep AssumeRole and deployment commands within a controlled shell step so credentials do not leak into unrelated pipeline steps or logs.
+- Include a complete, commented `Jenkinsfile.cd` adapted to EKS and a mapping of required IAM actions. If CloudFormation is used to create foundational resources, separate infrastructure provisioning from app release deployment.
+
+KUBERNETES / EKS HIGH AVAILABILITY
+- Design EKS networking and managed node groups across at least two available AZs in ap-south-2 (three if available and justified). Discover AZ names in the target account instead of hardcoding them.
+- Explain node group capacity per AZ, autoscaler/Karpenter, pod disruption budgets, rolling update settings, readiness/liveness/startup probes, resource requests/limits, HPA, load balancer health checks and graceful node drains.
+- Include actual `topologySpreadConstraints` examples for both `topology.kubernetes.io/zone` and `kubernetes.io/hostname`, with explanation of `maxSkew`, `topologyKey`, `whenUnsatisfiable`, selectors and the need for available nodes/capacity in each failure domain.
+- Include a Deployment with at least 3 replicas as a baseline, a PDB (for example minAvailable 2 for 3 replicas), HPA and Service/Ingress examples. Mark all app endpoints/ports/image values as placeholders to be verified.
+- Explain the difference between topology spread and pod anti-affinity and when to use either. Explain that topology spread does not create replicas or capacity by itself.
+- Discuss stateful workloads and AZ-bound EBS volumes. Do not claim EBS volumes become multi-AZ because Pods are spread. Explain StatefulSet/storage/backup implications.
+- Discuss namespace separation for dev/qa/prod and its limits. Compare one shared EKS cluster with namespaces vs separate clusters in the same AWS account; recommend a pragmatic default and explain that namespaces are not account-level security boundaries.
+
+SECURITY / OBSERVABILITY
+- IAM least privilege, environment isolation, boundaries, access entries/RBAC, no static keys, KMS encryption, Secrets Manager, IMDSv2, private subnets, tight security groups, VPC endpoints where useful, TLS, ECR image scanning, Trivy or equivalent, SBOM/secret scanning, non-root containers, read-only filesystem where compatible, seccomp/capabilities, NetworkPolicies where supported, S3 versioning and lifecycle.
+- CloudTrail, CloudWatch logs/metrics/alarms, EKS control-plane logging, Kubernetes audit, GuardDuty and AWS Config recommendations. Include alert examples and operational checks.
+- Distinguish must-have controls from optional/paid enhancements. Do not state a control is enabled unless the Terraform creates it or the user confirms it.
+
+BACKUP / RESTORE / DISASTER RECOVERY
+- Jenkins backup: JENKINS_HOME (with job/global config and required plugin metadata), EBS snapshots, JCasC source, Job DSL, plugin inventory and secure protection of secrets/master key. Workspaces can usually be recreated and need not be included unless required. Do not omit cryptographic key material needed to decrypt Jenkins credentials.
+- Application backup: RDS/PITR if database is RDS; EBS CSI snapshots/AWS Backup for persistent volumes as appropriate; Velero or equivalent for Kubernetes objects; ECR immutable images/artifacts; Terraform state backend with versioning and restricted access.
+- Include encryption, least-privilege backup access, lifecycle/retention examples, optional cross-region DR copy and periodic restore testing. Ask for RPO/RTO rather than inventing targets.
+- Explain Jenkins controller HA accurately: one controller with one active JENKINS_HOME writer; do not propose two active controllers sharing the same home. Use tested warm standby/restore and scalable agents unless a supported HA architecture is explicitly selected.
+
+TERRAFORM DELIVERABLES
+Generate a coherent repository, not isolated snippets. Include:
+- `versions.tf`, `provider.tf`, `variables.tf`, `data.tf`, `terraform.tfvars.example`, `outputs.tf`, backend configuration guidance and `.gitignore`.
+- IAM files for base role, instance profile (only if actually needed), assume-role policy, three environment roles, environment-specific permissions policies, permission boundaries and guardrails.
+- EKS/VPC files only if required to create missing platform resources; otherwise data sources and variables to reference existing resources. Never create a duplicate VPC/cluster unknowingly.
+- EKS access entries for the deployment roles and least-privilege RBAC/namespace model.
+- S3/ECR/KMS/backup resources if in scope; mark resources requiring existing IDs or application choices.
+- Ensure all files reference each other correctly; no duplicate resources, empty placeholder roles, invalid Terraform expressions or hardcoded fake account IDs. Provide exact filenames and explain dependencies.
+- Pin provider and module versions to currently valid versions only after checking current official docs/registry. Include `terraform fmt`, `validate`, plan review and apply sequence. Do not run destructive applies automatically.
+
+OUTPUT FORMAT AND WORK ORDER
+1. Start with assumptions, unknowns and a concise architecture diagram.
+2. Give a current-state discovery checklist and read-only commands for Jenkins/EC2/IAM.
+3. Explain risk controls and rollback before any change to the running Jenkins instance.
+4. Present the final repository/file tree, then provide the full content of every file in dependency order.
+5. Provide JCasC, plugin inventory, Job DSL (if needed), cloned CD job steps and a separate `Jenkinsfile.cd`.
+6. Provide EKS topology spread, PDB, HPA, Deployment, Service/Ingress and RBAC manifests.
+7. Provide backup/restore and security configuration with schedules as examples only.
+8. Give a detailed execution runbook from discovery -> backup -> Terraform plan -> IAM -> Jenkins clone -> EKS -> Dev -> QA -> Production -> restore test.
+9. Include validation commands, expected results, troubleshooting and rollback.
+10. Produce a polished PDF runbook explaining every step in plain language with code blocks, diagrams, file tree, checklists and a references section. Also produce the source Markdown so the PDF can be revised.
+
+QUALITY RULES
+- Treat security and production safety as first-class. No destructive change to the current Jenkins CI job or existing IAM profile without explicit review.
+- Avoid placeholders that look like real credentials. Use obvious placeholders such as `<ACCOUNT_ID>` only where account ID cannot be dynamically discovered.
+- Validate every Terraform and YAML example for syntax and resource references. Explain any code that is a template rather than drop-in production code.
+- Do not claim full HA from topology spread alone. Do not claim a single AWS account provides account-level environment isolation. Do not claim JCasC clones the complete Jenkins controller.
+- Browse official AWS, Jenkins and Kubernetes documentation for current region/service/version facts. Cite claims and list authoritative references.
+- Ask only essential questions. If a value is unknown, use a clearly labeled variable and continue with a safe, reviewable template.
+
+The final solution must be tailored to: existing Jenkins EC2 in ap-south-2, one AWS account, preserved current CI pipeline, a separate cloned CD pipeline, Dev/QA/Prod environment roles, EKS topology spread HA, security controls, Terraform, JCasC, backups and a step-by-step PDF runbook.

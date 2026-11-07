@@ -1,0 +1,41 @@
+# Review chart compatibility and choose an explicit chart version before installation.
+prometheus:
+  prometheusSpec:
+    retention: 15d
+    retentionSize: 40GB
+    replicas: 2
+    podDisruptionBudget:
+      enabled: true
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          storageClassName: "gp3"
+          resources:
+            requests:
+              storage: 50Gi
+alertmanager:
+  alertmanagerSpec:
+    replicas: 2
+    podDisruptionBudget:
+      enabled: true
+grafana:
+  enabled: true
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  persistence:
+    enabled: true
+    type: pvc
+    size: 10Gi
+    storageClassName: "gp3"
+  ingress:
+    enabled: false

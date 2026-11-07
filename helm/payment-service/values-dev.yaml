@@ -1,0 +1,11 @@
+replicaCount: 3
+resources:
+  requests: { cpu: 200m, memory: 256Mi }
+  limits: { cpu: "1", memory: 1Gi }
+hpa:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 6
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2

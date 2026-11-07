@@ -1,0 +1,9 @@
+# Minimal JCasC starter. Merge into the configuration exported from your live controller.
+# Do not replace the existing controller configuration with this file without a tested backup.
+# Do not put passwords, API tokens, private keys, or credential values in this YAML.
+jenkins:
+  systemMessage: "<b>Managed by reviewed Jenkins Configuration as Code.</b> Existing CI jobs must remain unchanged."
+
+unclassified:
+  location:
+    url: "${JENKINS_URL}"

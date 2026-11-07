@@ -1,0 +1,121 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    parameters {
+        choice(name: 'DEPLOY_ENV', choices: ['dev', 'qa', 'prod'], description: 'Target namespace and IAM role')
+        string(name: 'IMAGE_DIGEST', defaultValue: '', trim: true,
+               description: 'Immutable ECR digest from CI, e.g. sha256:<64 lowercase hex characters>')
+    }
+
+    environment {
+        AWS_REGION = 'ap-south-2'
+        ECR_REPOSITORY_NAME = 'payment-service'
+        // Configure EKS_CLUSTER_NAME as a Jenkins folder/global environment variable.
+    }
+
+    stages {
+        stage('Validate Inputs') {
+            steps {
+                script {
+                    if (!env.EKS_CLUSTER_NAME?.trim()) {
+                        error('EKS_CLUSTER_NAME is not configured in Jenkins folder/global environment.')
+                    }
+                    if (!(params.IMAGE_DIGEST ==~ /^sha256:[0-9a-f]{64}$/)) {
+                        error('IMAGE_DIGEST must be sha256 followed by exactly 64 lowercase hexadecimal characters.')
+                    }
+                    env.K8S_NAMESPACE = "payment-service-${params.DEPLOY_ENV}"
+                    env.TARGET_ROLE_NAME = "payment-service-${params.DEPLOY_ENV}-deployer"
+                }
+                echo "Target environment: ${params.DEPLOY_ENV}"
+                echo "Target namespace: ${env.K8S_NAMESPACE}"
+                echo 'Image digest validated; no mutable image tags are accepted.'
+            }
+        }
+
+        stage('Production Approval') {
+            when { expression { params.DEPLOY_ENV == 'prod' } }
+            steps {
+                input message: 'Approve payment-service Production deployment?', ok: 'Approve deployment'
+            }
+        }
+
+        stage('Assume Role and Deploy') {
+            steps {
+                sh label: 'Assume same-account role and deploy with Helm', script: '''#!/usr/bin/env bash
+set -euo pipefail
+set +x
+
+for tool in aws kubectl helm jq; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "Missing required tool: $tool" >&2; exit 1; }
+done
+
+BASE_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+BASE_ARN=$(aws sts get-caller-identity --query Arn --output text)
+if [[ "$BASE_ARN" != *"assumed-role/Jenkins-Base-Role/"* ]]; then
+  echo "ERROR: Expected Jenkins-Base-Role base identity; got $BASE_ARN" >&2
+  exit 1
+fi
+
+TARGET_ROLE_ARN="arn:aws:iam::${BASE_ACCOUNT_ID}:role/${TARGET_ROLE_NAME}"
+echo "Assuming $TARGET_ROLE_ARN"
+
+CREDS_JSON=$(aws sts assume-role \
+  --role-arn "$TARGET_ROLE_ARN" \
+  --role-session-name "jenkins-${BUILD_NUMBER}" \
+  --duration-seconds 3600 \
+  --output json)
+
+export AWS_ACCESS_KEY_ID=$(printf '%s' "$CREDS_JSON" | jq -r '.Credentials.AccessKeyId')
+export AWS_SECRET_ACCESS_KEY=$(printf '%s' "$CREDS_JSON" | jq -r '.Credentials.SecretAccessKey')
+export AWS_SESSION_TOKEN=$(printf '%s' "$CREDS_JSON" | jq -r '.Credentials.SessionToken')
+unset CREDS_JSON
+
+ASSUMED_ARN=$(aws sts get-caller-identity --query Arn --output text)
+echo "Assumed identity: $ASSUMED_ARN"
+if [[ "$ASSUMED_ARN" != *"assumed-role/${TARGET_ROLE_NAME}/"* ]]; then
+  echo "ERROR: Target role verification failed" >&2
+  exit 1
+fi
+
+export KUBECONFIG="${WORKSPACE}/.kube/config"
+mkdir -p "$(dirname "$KUBECONFIG")"
+chmod 700 "$(dirname "$KUBECONFIG")"
+aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG"
+
+kubectl auth can-i create deployments --namespace "$K8S_NAMESPACE"
+kubectl auth can-i create secrets --namespace "$K8S_NAMESPACE"
+
+ECR_REPOSITORY_URL="${BASE_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY_NAME}"
+aws ecr describe-images --repository-name "$ECR_REPOSITORY_NAME" \
+  --image-ids imageDigest="$IMAGE_DIGEST" --region "$AWS_REGION" >/dev/null
+
+helm upgrade --install payment-service ./helm/payment-service \
+  --namespace "$K8S_NAMESPACE" \
+  --values "./helm/payment-service/values-${DEPLOY_ENV}.yaml" \
+  --set-string image.repository="$ECR_REPOSITORY_URL" \
+  --set-string image.digest="$IMAGE_DIGEST" \
+  --atomic --wait --timeout 10m --history-max 20
+
+kubectl rollout status deployment/payment-service --namespace "$K8S_NAMESPACE" --timeout=5m
+kubectl get pods --namespace "$K8S_NAMESPACE" -o wide
+
+echo "Deployment complete: ${K8S_NAMESPACE} @ ${IMAGE_DIGEST}"
+'''
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'CD job finished. STS credentials were scoped to the deployment shell process.'
+            cleanWs(deleteDirs: true, notFailBuild: true)
+        }
+    }
+}

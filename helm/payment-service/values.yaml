@@ -1,0 +1,82 @@
+replicaCount: 3
+image:
+  repository: "REPLACE_WITH_ACCOUNT_ID.dkr.ecr.ap-south-2.amazonaws.com/payment-service"
+  digest: "sha256:REPLACE_WITH_64_HEX_DIGEST"
+  pullPolicy: IfNotPresent
+nameOverride: ""
+fullnameOverride: "payment-service"
+containerPort: 8080
+service:
+  type: ClusterIP
+  port: 80
+ingress:
+  enabled: false
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+  hosts:
+    - host: payment-service.example.internal
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+serviceAccount:
+  create: false
+  name: default
+podLabels: {}
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+probes:
+  startup:
+    path: /health/ready
+    initialDelaySeconds: 0
+    periodSeconds: 5
+    failureThreshold: 30
+  readiness:
+    path: /health/ready
+    periodSeconds: 10
+    failureThreshold: 3
+  liveness:
+    path: /health/live
+    periodSeconds: 20
+    failureThreshold: 3
+terminationGracePeriodSeconds: 30
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+hpa:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 12
+  cpuAverageUtilization: 70
+  memoryAverageUtilization: 80
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+networkPolicy:
+  enabled: false
+  ingressNamespace: ingress-system
+  appPort: 8080
+extraEnv: []
